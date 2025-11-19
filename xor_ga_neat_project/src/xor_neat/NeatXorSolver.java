@@ -1,20 +1,16 @@
 package xor_neat;
 
 import xor_common.CSVLogger;
+import javax.swing.SwingUtilities;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
+import java.util.*;
 
 public class NeatXorSolver {
 
     private static final Random RANDOM = new Random();
     private static final NeatConfig config = new NeatConfig();
 
+    // Données XOR
     private static final double[][] XOR_INPUTS = {
             {0, 0, 1}, {0, 1, 1}, {1, 0, 1}, {1, 1, 1}
     };
@@ -22,19 +18,33 @@ public class NeatXorSolver {
 
     private static final int INPUT_COUNT = 2;
     private static final int OUTPUT_COUNT = 1;
+    // Inputs + Biais + Output
     private static final int INITIAL_NODES = INPUT_COUNT + 1 + OUTPUT_COUNT;
 
     private static InnovationTracker innovationTracker;
     private static List<NeatGenome> population;
     private static List<Species> species;
 
+    // Référence au visualiseur
+    private static NetworkVisualizer visualizer;
+
     public static void main(String[] args) {
-        System.out.println("--- Démarrage de NEAT 'Complet' pour XOR (Java) ---");
+        System.out.println("--- Démarrage de NEAT (Mode Live Visual) ---");
+
+        // 1. Ouvrir la fenêtre AVANT la boucle
+        // On utilise invokeLater pour respecter le thread Swing
+        SwingUtilities.invokeLater(() -> {
+            visualizer = new NetworkVisualizer();
+        });
+
+        // Attendre un peu que la fenêtre s'ouvre
+        try { Thread.sleep(1000); } catch (InterruptedException e) {}
 
         innovationTracker = new InnovationTracker(INITIAL_NODES);
         population = new ArrayList<>();
         species = new ArrayList<>();
 
+        // Initialisation de la population
         for (int i = 0; i < NeatConfig.POPULATION_SIZE; i++) {
             population.add(new NeatGenome(INPUT_COUNT, OUTPUT_COUNT, innovationTracker));
         }
@@ -45,101 +55,112 @@ public class NeatXorSolver {
 
             for (int gen = 1; gen <= NeatConfig.MAX_GENERATIONS; gen++) {
 
-                // 2. Évaluation (Calculer le fitness brut)
+                // 2. Évaluation
                 for (NeatGenome genome : population) {
                     genome.setFitness(calculateFitness(genome));
                 }
 
-                // Trier la population par fitness brut
+                // 3. Tri de la population (Le meilleur en premier)
                 population.sort(Collections.reverseOrder(Comparator.comparingDouble(NeatGenome::getFitness)));
 
+                // Sauvegarde du meilleur absolu
                 if (bestOverallGenome == null || population.get(0).getFitness() > bestOverallGenome.getFitness()) {
                     bestOverallGenome = population.get(0).copy();
                 }
 
-                double maxFitness = population.get(0).getFitness();
+                NeatGenome currentGenBest = population.get(0);
+
+                // --- MISE A JOUR VISUELLE ---
+                final int currentGen = gen;
+                final NeatGenome genomeToDraw = currentGenBest; // Copie de référence
+                SwingUtilities.invokeLater(() -> {
+                    if (visualizer != null) {
+                        visualizer.updateGenome(genomeToDraw, currentGen);
+                    }
+                });
+
+                // --- Logs ---
+                double maxFitness = currentGenBest.getFitness();
                 double avgFitness = population.stream().mapToDouble(NeatGenome::getFitness).average().orElse(0.0);
 
                 logger.logGeneration(gen, maxFitness, avgFitness);
 
-                if (gen % 10 == 0 || gen == 1) {
-                    System.out.printf("Gén %4d | Max Fitness: %.6f | Avg: %.4f | Espèces: %d | Meilleur (N/C): %d/%d\n",
-                            gen, maxFitness, avgFitness, species.size(),
-                            bestOverallGenome.getNodes().size(), bestOverallGenome.getConnections().size());
+                // Affichage console (toutes les 10 gén ou si on a un bon score)
+                if (gen % 10 == 0 || gen == 1 || maxFitness > 14.0) {
+                    System.out.printf("Gén %4d | MaxFit: %.4f | Espèces: %3d | Structure: %d N, %d L\n",
+                            gen, maxFitness, species.size(),
+                            currentGenBest.getNodes().size(), currentGenBest.getConnections().size());
                 }
 
+                // --- Vérification de Succès ---
                 if (maxFitness >= NeatConfig.FITNESS_THRESHOLD) {
-                    System.out.println("\n✅ NEAT (Complet) a résolu le XOR à la génération " + gen);
+                    System.out.println("\n✅ SUCCÈS ! Solution trouvée à la génération " + gen);
+                    // On force une dernière mise à jour visuelle
+                    SwingUtilities.invokeLater(() -> visualizer.updateGenome(genomeToDraw, currentGen));
                     break;
                 }
 
-                // 3. Spéciation
+                // 4. Spéciation
                 speciate();
 
-                // 4. Calculer le fitness ajusté (partage de fitness)
+                // 5. Reproduction
+                List<NeatGenome> nextGeneration = new ArrayList<>();
+
+                // Calcul du fitness total ajusté
                 double totalAdjustedFitness = 0.0;
                 for (Species s : species) {
                     s.adjustFitness();
                     totalAdjustedFitness += s.getTotalAdjustedFitness();
                 }
 
-                // 5. Reproduction
-                List<NeatGenome> nextGeneration = new ArrayList<>();
-
                 if (totalAdjustedFitness <= 0) {
-                    // Si tout est à zéro, recréer (évite division par zéro)
-                    for (int i = 0; i < NeatConfig.POPULATION_SIZE; i++) {
-                        nextGeneration.add(new NeatGenome(INPUT_COUNT, OUTPUT_COUNT, innovationTracker));
-                    }
-                    population = nextGeneration;
-                    continue; // Sauter le reste et passer à la prochaine génération
-                }
-
-                for (Species s : species) {
-                    if (s.getMembers().isEmpty()) continue;
-
-                    int offspringCount = (int) Math.round((s.getTotalAdjustedFitness() / totalAdjustedFitness) * NeatConfig.POPULATION_SIZE);
-
-                    // Appliquer l'élitisme (conserver le meilleur de l'espèce)
-                    if (offspringCount > 0 && NeatConfig.ELITISM > 0) {
-                        // Tri basé sur le VRAI fitness (corrigé dans Species.java)
-                        s.getMembers().sort(Collections.reverseOrder(Comparator.comparingDouble(NeatGenome::getFitness)));
-                        nextGeneration.add(s.getMembers().get(0).copy()); // Ajouter le meilleur
-                        offspringCount--;
-                    }
-
-                    // Créer le reste des enfants
-                    for (int i = 0; i < offspringCount; i++) {
-                        nextGeneration.add(s.createOffspring(config, innovationTracker));
-                    }
-                }
-
-                // Remplir si nécessaire (arrondis)
-                if (species.isEmpty() || species.get(0).getMembers().isEmpty()) {
-                    while (nextGeneration.size() < NeatConfig.POPULATION_SIZE) {
-                        nextGeneration.add(new NeatGenome(INPUT_COUNT, OUTPUT_COUNT, innovationTracker));
-                    }
+                    // Sécurité : si tout le monde est nul, on garde la population actuelle ou on en recrée une
+                    nextGeneration.addAll(population);
                 } else {
-                    while (nextGeneration.size() < NeatConfig.POPULATION_SIZE && !species.isEmpty()) {
-                        nextGeneration.add(species.get(0).createOffspring(config, innovationTracker)); // de la meilleure espèce
+                    for (Species s : species) {
+                        // Nombre d'enfants proportionnel au fitness de l'espèce
+                        int offspringCount = (int) ((s.getTotalAdjustedFitness() / totalAdjustedFitness) * NeatConfig.POPULATION_SIZE);
+
+                        // Elitisme : on garde le champion de l'espèce directement
+                        if (offspringCount > 0) {
+                            s.getMembers().sort(Collections.reverseOrder(Comparator.comparingDouble(NeatGenome::getFitness)));
+                            nextGeneration.add(s.getMembers().get(0).copy());
+                            offspringCount--;
+                        }
+
+                        // Création des enfants (Crossover / Mutation)
+                        for (int i = 0; i < offspringCount; i++) {
+                            nextGeneration.add(s.createOffspring(config, innovationTracker));
+                        }
                     }
                 }
 
+                // Remplissage (si erreurs d'arrondi)
+                while (nextGeneration.size() < NeatConfig.POPULATION_SIZE) {
+                    if (!species.isEmpty()) {
+                        Species randomSpecies = species.get(RANDOM.nextInt(species.size()));
+                        nextGeneration.add(randomSpecies.createOffspring(config, innovationTracker));
+                    } else {
+                        nextGeneration.add(new NeatGenome(INPUT_COUNT, OUTPUT_COUNT, innovationTracker));
+                    }
+                }
                 population = nextGeneration;
             }
 
             displayFinalResults(bestOverallGenome);
 
         } catch (IOException e) {
-            System.err.println("Erreur de logger: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
+    // --- Méthodes Logiques ---
+
     private static void speciate() {
-        // ... (inchangé) ...
-        for (Species s : species) {
-            s.clear();
-        }
+        // Vider les espèces
+        for (Species s : species) s.clear();
+
+        // Réassigner chaque génome
         for (NeatGenome genome : population) {
             boolean foundSpecies = false;
             for (Species s : species) {
@@ -152,133 +173,111 @@ public class NeatXorSolver {
                 species.add(new Species(genome));
             }
         }
+
+        // Supprimer les espèces vides
         species.removeIf(s -> s.getMembers().isEmpty());
+
+        // Préparer pour la reproduction (tri interne, choix du représentant)
         for (Species s : species) {
             s.prepareForReproduction(config);
         }
     }
 
     private static double calculateFitness(NeatGenome genome) {
-        // ... (inchangé) ...
         double totalError = 0.0;
         for (int i = 0; i < XOR_INPUTS.length; i++) {
-            double prediction = predict(genome, XOR_INPUTS[i]);
-            totalError += Math.abs(XOR_TARGETS[i] - prediction);
+            double output = predict(genome, XOR_INPUTS[i]);
+            double expected = XOR_TARGETS[i];
+            // Erreur quadratique
+            totalError += (expected - output) * (expected - output);
         }
+
+        // Fitness Max théorique = 4.0 (4 tests corrects)
+        // On met au carré pour punir les erreurs (standard NEAT)
         double fitness = 4.0 - totalError;
-        return fitness * fitness; // Fitness au carré
+        if (fitness < 0) fitness = 0;
+        return fitness * fitness;
     }
 
-    // --- CORRECTION MAJEURE : FONCTION PREDICT ---
-    /**
-     * Prédiction Feedforward avec un tri topologique correct.
-     */
+    // --- Cœur du Réseau de Neurones ---
+
     private static double predict(NeatGenome genome, double[] input) {
         Map<Integer, Double> nodeOutputs = new HashMap<>();
 
-        // 1. Séparer les nœuds par type
-        List<NodeGene> inputs = new ArrayList<>();
-        List<NodeGene> outputs = new ArrayList<>();
-        List<NodeGene> hidden = new ArrayList<>();
-        for (NodeGene n : genome.getNodes().values()) {
-            if (n.type == NodeGene.NodeType.INPUT || n.type == NodeGene.NodeType.BIAS) {
-                inputs.add(n);
-            } else if (n.type == NodeGene.NodeType.OUTPUT) {
-                outputs.add(n);
-            } else {
-                hidden.add(n);
-            }
-        }
+        // 1. Initialiser les entrées
+        // Input 0 -> XOR_INPUTS[...][0]
+        // Input 1 -> XOR_INPUTS[...][1]
+        // Input 2 -> Bias (1.0)
+        nodeOutputs.put(0, input[0]);
+        nodeOutputs.put(1, input[1]);
+        nodeOutputs.put(2, 1.0);
 
-        // 2. Initialiser les sorties des nœuds d'entrée
-        int inputIndex = 0;
-        for (NodeGene n : inputs) {
-            if (n.type == NodeGene.NodeType.INPUT) {
-                nodeOutputs.put(n.id, input[inputIndex++]);
-            }
-            if (n.type == NodeGene.NodeType.BIAS) {
-                nodeOutputs.put(n.id, 1.0);
-            }
-        }
+        // 2. Propagation (Relaxation)
+        // Pour gérer les boucles ou les structures complexes, on itère
+        // un nombre de fois suffisant pour que le signal traverse le réseau.
+        // depthMax est une sécurité.
+        int maxDepth = genome.getNodes().size() + 2;
 
-        // 3. Créer la liste des nœuds à activer (ordre topologique)
-        List<NodeGene> pendingNodes = new ArrayList<>(hidden);
-        pendingNodes.addAll(outputs);
-        List<Integer> activatedNodeIds = new ArrayList<>(nodeOutputs.keySet());
+        for (int step = 0; step < maxDepth; step++) {
+            boolean unstable = false;
 
-        int safeguard = 0; // Empêche les boucles infinies
-        while (!pendingNodes.isEmpty() && safeguard < genome.getNodes().size() * 2) {
-            safeguard++;
-            List<NodeGene> activatedThisRound = new ArrayList<>();
+            // On parcourt tous les noeuds (sauf inputs)
+            for (NodeGene node : genome.getNodes().values()) {
+                if (node.type == NodeGene.NodeType.INPUT || node.type == NodeGene.NodeType.BIAS) continue;
 
-            for (NodeGene node : pendingNodes) {
-                boolean allInputsReady = true;
+                double sum = 0.0;
+                boolean hasInputSignal = false;
 
-                // Vérifier si toutes les connexions entrantes proviennent de nœuds déjà activés
+                // Somme pondérée des connexions entrantes
                 for (ConnectionGene conn : genome.getConnections().values()) {
                     if (conn.outNodeId == node.id && conn.enabled) {
-                        if (!activatedNodeIds.contains(conn.inNodeId)) {
-                            allInputsReady = false;
-                            break;
-                        }
+                        hasInputSignal = true;
+                        // Si l'entrée n'est pas encore calculée, on prend 0.0 (sera corrigé à l'itération suivante)
+                        sum += nodeOutputs.getOrDefault(conn.inNodeId, 0.0) * conn.weight;
                     }
                 }
 
-                if (allInputsReady) {
-                    // Tous les prérequis sont là, activer ce nœud
-                    double sum = 0.0;
-                    for (ConnectionGene conn : genome.getConnections().values()) {
-                        if (conn.outNodeId == node.id && conn.enabled) {
-                            // Utiliser getOrDefault au cas où une entrée (ex: biais) n'a pas de connexion
-                            sum += nodeOutputs.getOrDefault(conn.inNodeId, 0.0) * conn.weight;
-                        }
+                if (hasInputSignal) {
+                    // Ajout du biais interne (mutation du noeud)
+                    sum += node.bias;
+
+                    double output = sigmoid(sum);
+
+                    // Vérifier si la valeur a changé (stabilité)
+                    double oldVal = nodeOutputs.getOrDefault(node.id, -999.0);
+                    if (Math.abs(output - oldVal) > 1e-5) {
+                        unstable = true;
+                        nodeOutputs.put(node.id, output);
                     }
-                    nodeOutputs.put(node.id, sigmoid(sum + node.bias));
-                    activatedNodeIds.add(node.id);
-                    activatedThisRound.add(node);
                 }
             }
 
-            if (activatedThisRound.isEmpty() && !pendingNodes.isEmpty()) {
-                // Erreur : Boucle ou structure impossible (réseau non-feedforward)
-                // Cela ne devrait pas arriver dans ce projet, mais par sécurité :
-                // Forcer l'activation avec 0.0 pour les entrées manquantes
-                for (NodeGene node : pendingNodes) {
-                    double sum = 0.0;
-                    for (ConnectionGene conn : genome.getConnections().values()) {
-                        if (conn.outNodeId == node.id && conn.enabled) {
-                            sum += nodeOutputs.getOrDefault(conn.inNodeId, 0.0) * conn.weight;
-                        }
-                    }
-                    nodeOutputs.put(node.id, sigmoid(sum + node.bias));
-                    activatedThisRound.add(node);
-                }
-            }
-
-            pendingNodes.removeAll(activatedThisRound);
+            // Si le réseau s'est stabilisé, on arrête plus tôt
+            if (!unstable) break;
         }
 
-        // 3. Renvoyer la sortie du (premier) nœud de sortie
-        // Note: suppose un seul nœud de sortie, ce qui est correct pour XOR
-        return nodeOutputs.getOrDefault(outputs.get(0).id, 0.0);
+        // Retourner la valeur du noeud de sortie (ID = 3 pour XOR avec 2 inputs + 1 biais)
+        // Structure standard : 0,1 (Inputs), 2 (Bias), 3 (Output)
+        return nodeOutputs.getOrDefault(3, 0.0);
     }
 
-
-    private static double sigmoid(double z) {
-        if (z > 500) z = 500;
-        if (z < -500) z = -500;
-        return 1.0 / (1.0 + Math.exp(-z));
+    /**
+     * Fonction d'activation Sigmoïde "Raidie" (Steepened Sigmoid).
+     * Crucial pour XOR avec NEAT.
+     */
+    private static double sigmoid(double x) {
+        return 1.0 / (1.0 + Math.exp(-4.9 * x));
     }
 
-    private static void displayFinalResults(NeatGenome bestGenome) {
-        // ... (inchangé) ...
-        System.out.println("\n--- Résultat Final NEAT (Complet) ---");
-        System.out.printf("Fitness Max Atteinte: %.6f\n", Math.sqrt(bestGenome.getFitness())); // sqrt pour revenir à l'échelle 4.0
-        System.out.printf("Structure Finale: %d Noeuds, %d Connexions\n", bestGenome.getNodes().size(), bestGenome.getConnections().size());
+    private static void displayFinalResults(NeatGenome best) {
+        System.out.println("\n--- Résultat Final ---");
+        System.out.printf("Fitness Atteinte: %.6f\n", best.getFitness());
+        System.out.printf("Structure: %d Noeuds, %d Connexions\n", best.getNodes().size(), best.getConnections().size());
 
+        System.out.println("Prédictions :");
         for (int i = 0; i < XOR_INPUTS.length; i++) {
-            double prediction = predict(bestGenome, XOR_INPUTS[i]);
-            System.out.printf("  Entrée: (%.0f, %.0f) | Cible: %.0f | Sortie Prédite: %.4f\n",
+            double prediction = predict(best, XOR_INPUTS[i]);
+            System.out.printf("  In: (%.0f, %.0f) | Cible: %.0f | Out: %.4f\n",
                     XOR_INPUTS[i][0], XOR_INPUTS[i][1], XOR_TARGETS[i], prediction);
         }
     }

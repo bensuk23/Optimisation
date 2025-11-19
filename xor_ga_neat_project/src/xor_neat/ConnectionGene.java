@@ -1,6 +1,5 @@
 package xor_neat;
 
-// Fichier: ConnectionGene.java
 import java.util.Objects;
 
 public class ConnectionGene {

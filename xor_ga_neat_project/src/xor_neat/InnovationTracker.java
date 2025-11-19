@@ -4,7 +4,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 
-// Fichier: InnovationTracker.java
 // Suit les innovations (nouveaux gènes) pour assurer un croisement correct.
 public class InnovationTracker {
 

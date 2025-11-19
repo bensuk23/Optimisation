@@ -1,6 +1,5 @@
 package xor_launcher;
 
-// Importe les classes 'main' de vos deux applications
 import xor_ga_classic.Main;
 import xor_neat.NeatXorSolver;
 
