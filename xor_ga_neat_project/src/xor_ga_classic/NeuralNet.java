@@ -134,11 +134,14 @@ public class NeuralNet {
                 sse += error * error;
             }
 
-            // Fitness (Maximisation): 1 / (SSE + epsilon)
-            return 1.0 / (sse + 1e-6);
+
+            double fitness = 4.0 - sse;
+
+
+            return Math.max(0.0, fitness);
 
         } catch (IllegalArgumentException e) {
-            return 0.0; // Fitness minimale en cas d'erreur
+            return 0.0;
         }
     }
 }

@@ -71,7 +71,7 @@ public class Main {
                         gen, currentMaxFitness, avgFitness);
             }
 
-            if (maxFitnessOverall > 999000.0) { // Seuil de réussite (1 / (très petite erreur))
+            if (maxFitnessOverall >= 3.99) {
                 System.out.println("\n✅ Succès: Solution XOR trouvée à la génération " + gen);
                 break;
             }
